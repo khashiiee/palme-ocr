@@ -1,17 +1,16 @@
 """
 OCR Engine — dots.ocr model wrapper.
 Handles model loading, device selection, and inference.
+Auto-detects CUDA/CPU and configures everything accordingly.
 """
 
+import time as _time
 import torch
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor
 from qwen_vl_utils import process_vision_info
-import time as _time
 
 
-
-# The prompt instructs the model to parse all layout elements and extract text.
 DOCUMENT_PARSE_PROMPT = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
 
 1. Bbox format: [x1, y1, x2, y2]
@@ -35,15 +34,11 @@ class OCREngine:
     """Wrapper around dots.ocr for document text extraction."""
 
     def __init__(self, model_path: str):
-        # Device selection: CUDA > MPS > CPU
+        # Device selection: CUDA > CPU (MPS has compatibility issues)
         if torch.cuda.is_available():
             self.device = "cuda"
             attn_impl = "flash_attention_2"
             dtype = torch.bfloat16
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            self.device = "mps"
-            attn_impl = "eager"
-            dtype = torch.float32
         else:
             self.device = "cpu"
             attn_impl = "eager"
@@ -51,21 +46,30 @@ class OCREngine:
 
         print(f"  Device: {self.device} | Attention: {attn_impl} | Dtype: {dtype}")
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            attn_implementation=attn_impl,
-            torch_dtype=torch.float32,
-            device_map="cpu",
-            low_cpu_mem_usage=False,
-            trust_remote_code=True,
-        )        
+        # Try flash_attention_2 on CUDA, fall back to eager if not available
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                attn_implementation=attn_impl,
+                torch_dtype=dtype,
+                device_map=self.device,
+                trust_remote_code=True,
+            )
+        except (ImportError, ValueError):
+            print("  Flash attention not available, falling back to eager")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                attn_implementation="eager",
+                torch_dtype=dtype,
+                device_map=self.device,
+                trust_remote_code=True,
+            )
+
+        # Ensure all params are bfloat16 (fixes mixed dtype issues)
         self.model = self.model.to(dtype=torch.bfloat16)
         self.model.eval()
 
-        
-
-        # Patch: newer transformers requires video_processor in Qwen2.5VL processor
-        # but dots.ocr's custom processor doesn't pass it -> monkey-patch the check
+        # Load processor with video_processor patch
         try:
             self.processor = AutoProcessor.from_pretrained(
                 model_path, trust_remote_code=True
@@ -73,14 +77,11 @@ class OCREngine:
         except TypeError as e:
             if "video_processor" in str(e):
                 from transformers.processing_utils import ProcessorMixin
-
                 original_check = ProcessorMixin.check_argument_for_proper_class
-
                 def patched_check(self_proc, argument_name, arg):
                     if argument_name == "video_processor" and arg is None:
                         return
                     return original_check(self_proc, argument_name, arg)
-
                 ProcessorMixin.check_argument_for_proper_class = patched_check
                 self.processor = AutoProcessor.from_pretrained(
                     model_path, trust_remote_code=True
@@ -112,30 +113,27 @@ class OCREngine:
             padding=True,
             return_tensors="pt",
         )
-        # Force ALL tensors to float32 on CPU
+
+        # Move all tensors to the correct device and dtype
         inputs = {
-            k: v.to(device="cpu", dtype=torch.bfloat16) if v.is_floating_point() else v.to(device="cpu")
+            k: v.to(device=self.device, dtype=torch.bfloat16) if v.is_floating_point() else v.to(device=self.device)
             for k, v in inputs.items()
         }
-
-        for k, v in inputs.items():
-            if hasattr(v, 'dtype'):
-                print(f"    {k}: dtype={v.dtype}, shape={v.shape}")
 
         print(f"        Input tokens: {inputs['input_ids'].shape[1]}")
         print(f"        Pixel values shape: {inputs['pixel_values'].shape}")
         print(f"        Generating (max 4096 tokens)...", flush=True)
+
         gen_start = _time.time()
         with torch.no_grad():
             generated_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=4096,
-                repetition_penalty=1.2
+                repetition_penalty=1.2,
             )
         gen_time = _time.time() - gen_start
         new_tokens = generated_ids.shape[1] - inputs['input_ids'].shape[1]
         print(f"        Generated {new_tokens} tokens in {gen_time:.1f}s ({new_tokens/gen_time:.1f} tok/s)")
-
 
         generated_ids_trimmed = [
             out_ids[len(in_ids):]
