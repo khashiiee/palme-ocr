@@ -1,0 +1,9 @@
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.27.0
+huggingface-hub>=0.20.0
+qwen-vl-utils>=0.0.2
+PyMuPDF>=1.24.0
+opencv-python-headless>=4.9.0
+numpy>=1.24.0
+Pillow>=10.0.0

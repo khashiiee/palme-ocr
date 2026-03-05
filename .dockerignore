@@ -1,0 +1,11 @@
+.git
+weights/
+results/
+output/
+dev_set/
+*.pdf
+__pycache__
+.venv
+venv
+.DS_Store
+dots_ocr_repo/

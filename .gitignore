@@ -1,0 +1,34 @@
+# Model weights (downloaded in Docker build)
+weights/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output
+results/
+output/
+results-old/
+
+# Data
+Data/
